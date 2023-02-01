@@ -1,0 +1,228 @@
+
+
+
+
+tname,total_records,same records,updated records
+day1.csv--->   41612(new rec),0(updated rec),0(old records)   ---> 41612 
+day2.csv--->   62570(new rec),20(updated rec),10(old records) ---> 62601
+day3.csv--->   62167(new rec),20(updated rec),10(old records) ---> 62197
+
+
+-->Creating database and table in sql 
+
+mysql --local-infile=1 -uroot -p
+
+SET GLOBAL local_infile=1;
+
+create database cohort_f10;
+
+use cohort_f10;
+
+create table sales(
+	custid integer(10) primary key not null,
+	username varchar(30),
+	quote_count varchar(30),
+	ip varchar(30),
+	entry_time varchar(30),
+	prp_1 varchar(30),
+	prp_2 varchar(30),
+	prp_3 varchar(30),
+	ms varchar(30),
+	http_type varchar(30),
+	purchase_category varchar(30),
+	total_count varchar(30),
+	purchase_sub_category varchar(30),
+	http_info text,
+	status_code integer(10),
+	curr_time bigint
+);
+
+
+load data local infile '/home/saif/cohort_f10/datasets/Day_1.csv' into table sales fields terminated by ',';
+
+
+set sql_safe_updates = 0;
+
+
+update sales set curr_time = CURRENT_TIMESTAMP() + 1 where curr_time IS NULL;
+
+select * from sales limit 5; (for checking whether records are there or not )
+
+
+
+ for starting of all the daemons ---> start-all.sh
+ 
+
+-->Loading of data:
+sqoop job:
+
+sqoop job --create load_data_HFS -- import --connect jdbc:mysql://localhost:3306/cohort_f10?useSSL=False --username root --password Welcome@123 --table sales --target-dir 'HFS/Output/sales_1' - m 1
+
+sqoop import \
+--connect jdbc:mysql://localhost:3306/project?useSSL=False \
+--table sales \
+--username root --password Welcome@123 \
+--target-dir /user/saif/HFS/output/sales_1
+
+To get the list of jobs in sqoop
+	sqoop job --list
+To get last value
+	--show project_job
+To delete job
+	sqoop job --delete project_job
+To execute
+	sqoop job --exec project_job
+
+
+-->Creating and Loading data from HDFS to Hive
+
+for starting of hive ----->
+                            1. nohup hive --service metastore &
+                            2. hive
+
+
+create database hv_sales;
+
+use hv_sales;
+
+1----> creartion of managed table 
+create table hvsales(
+custid int,
+username string,
+quote_count string,
+ip string,
+entry_time string,
+prp_1 string,
+prp_2 string,
+prp_3 string,
+ms string,
+http_type string,
+purchase_category string,
+total_count string,
+purchase_sub_category string,
+http_info string,
+status_code int,
+curr_time BIGINT
+)
+row format delimited fields terminated by ',';
+
+
+load data inpath '/user/saif/HFS/output/sales_1' into table hvsales;
+
+changed:load data inpath "HFS/Output/sales_1/part-m-00000" into table hvsales;
+
+
+-->Partition Table in Hive
+
+importing partition libraries
+1--->set hive.exec.dynamic.partition=true;    
+2--->set hive.exec.dynamic.partition.mode=nonstrict;
+
+
+2---> external partition table creation 
+create external table hv_ext_sales(
+custid int,
+username string,
+quote_count string,
+ip string,
+prp_1 string,
+prp_2 string,
+prp_3 string,
+ms string,
+http_type string,
+purchase_category string,
+total_count string,
+purchase_sub_category string,
+http_info string,
+status_code int,
+curr_time BIGINT
+)
+partitioned by(year string,month string)
+row format delimited fields terminated by ',';
+
+
+insert overwrite table hv_ext_sales partition (year, month) select custid,username,quote_count,ip,prp_1,prp_2,prp_3,ms,http_type,
+purchase_category,total_count,purchase_sub_category,http_info,status_code,curr_time,
+cast(year(from_unixtime(unix_timestamp(entry_time , 'dd/MMM/yyyy'))) as string) as year, 
+cast(month(from_unixtime(unix_timestamp(entry_time , 'dd/MMM/yyyy'))) as string) as month from hvsales;
+
+select * from hv_ext_sales limit 5;
+
+---> SCD LOGIC:
+
+insert overwrite table hv_ext_sales partition (year, month) select a.custid,a.username,a.quote_count,a.ip,a.prp_1,a.prp_2,a.prp_3,a.ms,a.http_type,a.purchase_category,a.total_count,a.purchase_sub_category,a.http_info,a.status_code,a.curr_time,cast(year(from_unixtime(unix_timestamp(entry_time , 'dd/MMM/yyyy'))) as string) as year, cast(month(from_unixtime(unix_timestamp(entry_time , 'dd/MMM/yyyy'))) as string) as month from hvsales a
+join hv_ext_sales b on a.custid=b.custid
+union
+select a.custid,a.username,a.quote_count,a.ip,a.prp_1,a.prp_2,a.prp_3,a.ms,a.http_type,a.purchase_category,a.total_count,a.purchase_sub_category,a.http_info,a.status_code,a.curr_time,cast(year(from_unixtime(unix_timestamp(entry_time , 'dd/MMM/yyyy'))) as string) as year, cast(month(from_unixtime(unix_timestamp(entry_time , 'dd/MMM/yyyy'))) as string) as month from hvsales a
+left join hv_ext_sales b on a.custid=b.custid
+where b.custid is null
+union
+select b.custid,b.username,b.quote_count,b.ip,b.prp_1,b.prp_2,b.prp_3,b.ms,b.http_type,b.purchase_category,b.total_count,b.purchase_sub_category,b.http_info,b.status_code,b.curr_time,cast(year(from_unixtime(unix_timestamp(entry_time , 'dd/MMM/yyyy'))) as string) as year, cast(month(from_unixtime(unix_timestamp(entry_time , 'dd/MMM/yyyy'))) as string) as month
+from hvsales a right join hv_ext_sales  b on a.custid=b.custid
+where a.custid is null
+;
+
+
+
+-->Intermediate Table for checking the data
+create table inter_tab(
+custid int,
+username string,
+quote_count string,
+ip string,
+entry_time string,
+prp_1 string,
+prp_2 string,
+prp_3 string,
+ms string,
+http_type string,
+purchase_category string,
+total_count string,
+purchase_sub_category string,
+http_info string,
+status_code int,
+year string,
+month string,
+curr_time BIGINT
+)
+row format delimited fields terminated by ',';
+
+insert into table inter_tab select *
+from hv_ext_sales t1 join
+     (select max(curr_time) as max_date_time from hv_ext_sales) tt1
+          on tt1.max_date_time = t1.curr_time;
+ ABOVE INSERT WILL ONLY INSERT THE LATEST RECORDS 
+
+--->  Creating table IN SQL  and Exporting using sqoop 
+
+create table sql_exp (
+	custid integer(10),
+	username varchar(255),
+	quote_count varchar(255),
+	ip varchar(30),
+	entry_time varchar(255),
+	prp_1 varchar(30),
+	prp_2 varchar(30),
+	prp_3 varchar(30),
+	ms varchar(255),
+	http_type varchar(255),
+	purchase_category varchar(255),
+	total_count varchar(30),
+	purchase_sub_category varchar(255),
+	http_info text,
+	status_code integer(10),
+	year varchar(100),
+	month varchar(100),
+	curr_time bigint  );
+
+SQOOP EXPORT
+
+sqoop export --connect jdbc:mysql://localhost:3306/cohort_f10?useSSL=False --table sql_exp --username root --password Welcome@123 --export-dir "/user/hive/warehouse/hv_sales.db/inter_tab" --input-fields-terminated-by ','
+
+
+
+
+
+
+
+
